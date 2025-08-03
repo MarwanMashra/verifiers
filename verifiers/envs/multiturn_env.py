@@ -8,9 +8,10 @@ from verifiers.types import (
     ChatCompletion,
     ChatMessage,
     Completion,
-    Info,
     Messages,
     MessageType,
+    RolloutRequest,
+    RolloutResult,
     SamplingArgs,
     State,
 )
@@ -44,35 +45,31 @@ class MultiTurnEnv(Environment):
         self,
         client: AsyncOpenAI,
         model: str,
-        prompt: Messages,
-        answer: str = "",
-        task: str = "default",
-        info: Info | None = None,
+        request: RolloutRequest,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> RolloutResult:
         """
         Generate a multi-turn rollout with the environment (messages, state).
         """
-        info = info or {}
         is_completed = False
         state = {
-            "prompt": prompt,
+            "prompt": request.prompt,
             "completion": [],
-            "answer": answer,
-            "task": task,
-            "info": info,
+            "answer": request.answer,
+            "task": request.task,
+            "info": request.info,
             "responses": [],
             "turn": 0,
         }
         state = self.setup_state(state)
         if self.message_type == "chat":
-            assert isinstance(prompt, list)
+            assert isinstance(request.prompt, list)
             completion = []
         else:
-            assert isinstance(prompt, str)
+            assert isinstance(request.prompt, str)
             completion = ""
-        rollout = deepcopy(prompt)
+        rollout = deepcopy(request.prompt)
         while not is_completed:
             if self.is_completed(rollout, state, **kwargs):
                 is_completed = True
@@ -81,7 +78,7 @@ class MultiTurnEnv(Environment):
                 client=client,
                 model=model,
                 prompt=rollout,
-                oai_tools=info.get("oai_tools", None),
+                oai_tools=request.info.get("oai_tools", None),
                 sampling_args=sampling_args,
                 message_type=self.message_type,
             )
@@ -128,4 +125,5 @@ class MultiTurnEnv(Environment):
                     assert isinstance(completion, str)
                     rollout += env_msgs
                     completion += env_msgs
-        return completion, state
+
+        return RolloutResult(completion=completion, state=state)

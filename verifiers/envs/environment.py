@@ -15,14 +15,14 @@ from verifiers.types import (
     ChatCompletion,
     ChatCompletionToolParam,
     ChatMessage,
-    GenerateInputs,
     GenerateOutputs,
-    Info,
     Messages,
     MessageType,
     ModelResponse,
     ProcessedOutputs,
     RewardFunc,
+    RolloutRequest,
+    RolloutResult,
     SamplingArgs,
     State,
 )
@@ -237,16 +237,13 @@ class Environment(ABC):
         self,
         client: AsyncOpenAI,
         model: str,
-        prompt: Messages,
-        answer: str = "",
-        task: str = "default",
-        info: Info | None = None,
+        request: RolloutRequest,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> RolloutResult:
         """
         Run a rollout for a given prompt.
-        Returns a tuple of (completion, state).
+        Returns a RolloutResult.
         """
         pass
 
@@ -255,33 +252,25 @@ class Environment(ABC):
         semaphore: asyncio.Semaphore,
         client: AsyncOpenAI,
         model: str,
-        prompt: Messages,
-        answer: str = "",
-        task: str = "default",
-        info: Info | None = None,
+        request: RolloutRequest,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[Messages, State]:
+    ) -> RolloutResult:
         """
         Run a rollout with a semaphore.
         """
         async with semaphore:
-            return await self.rollout(
-                client, model, prompt, answer, task, info, sampling_args, **kwargs
-            )
+            return await self.rollout(client, model, request, sampling_args, **kwargs)
 
     async def run_rollouts(
         self,
         client: AsyncOpenAI,
         model: str,
-        prompts: list[Messages],
-        answers: list[str],
-        tasks: list[str],
-        infos: list[Info],
+        requests: list[RolloutRequest],
         sampling_args: SamplingArgs | None = None,
         max_concurrent: int = -1,
         **kwargs,
-    ) -> list[tuple[Messages, State]]:
+    ) -> list[RolloutResult]:
         """
         Run rollouts for a given list of prompts and return the completions.
         """
@@ -291,32 +280,24 @@ class Environment(ABC):
             semaphore = asyncio.Semaphore(max_concurrent)
             rollout_tasks = [
                 self.run_rollout_with_semaphore(
-                    semaphore,
-                    client,
-                    model,
-                    prompt,
-                    answer,
-                    task,
-                    info,
-                    sampling_args,
-                    **kwargs,
+                    semaphore, client, model, request, sampling_args, **kwargs
                 )
-                for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
+                for request in requests
             ]
         else:
             rollout_tasks = [
-                self.rollout(
-                    client, model, prompt, answer, task, info, sampling_args, **kwargs
-                )
-                for prompt, answer, task, info in zip(prompts, answers, tasks, infos)
+                self.rollout(client, model, request, sampling_args, **kwargs)
+                for request in requests
             ]
         return await tqdm_asyncio.gather(
-            *rollout_tasks, total=len(prompts), desc=f"Running {len(prompts)} rollouts"
+            *rollout_tasks,
+            total=len(requests),
+            desc=f"Running {len(requests)} rollouts",
         )
 
     async def a_generate(
         self,
-        inputs: GenerateInputs | Dataset | dict,
+        inputs: list[RolloutRequest] | Dataset,
         client: AsyncOpenAI | None = None,
         model: str | None = None,
         sampling_args: SamplingArgs | None = None,
@@ -327,8 +308,6 @@ class Environment(ABC):
         """
         Generate completions and rewards for a given set of inputs.
         """
-        if isinstance(inputs, GenerateInputs):
-            inputs = inputs.model_dump()
         # use class-level client and model if not provided
         if client is None:
             assert self.client is not None
@@ -340,76 +319,42 @@ class Environment(ABC):
         if sampling_args is not None:
             gen_sampling_args.update(sampling_args)
 
-        # preprocess dataset or GenerateInputs to GenerateOutputs
-        results_dict = {}
         if isinstance(inputs, Dataset):
-            # get prompt column
-            results_dict = {}
-            for col in inputs.column_names:
-                if col == "info":
-                    # handle info column to ensure mutable dicts
-                    results_dict[col] = [dict(item) for item in inputs[col]]
-                else:
-                    results_dict[col] = deepcopy(inputs[col])
-        else:
-            results_dict = {col: deepcopy(inputs[col]) for col in inputs}
-        if "prompt" not in results_dict:
-            raise ValueError("prompt column not found in inputs")
-        if "answer" not in results_dict and "info" not in results_dict:
-            raise ValueError("answer or info column must be found in inputs")
-        if "answer" not in results_dict:
-            results_dict["answer"] = [""] * len(results_dict["prompt"])
-        if "task" not in results_dict:
-            results_dict["task"] = ["default"] * len(results_dict["prompt"])
-        if "info" not in results_dict:
-            results_dict["info"] = [{}] * len(results_dict["prompt"])
-        for i, info in enumerate(results_dict["info"]):
-            if isinstance(info, str):
-                info = json.loads(info)
-            if self.oai_tools and "oai_tools" not in info:
-                info["oai_tools"] = self.oai_tools
+            inputs = RolloutRequest.from_dataset(inputs)
 
-        # prepare GenerateOutputs and run rollouts
-        results = GenerateOutputs(
-            prompt=results_dict["prompt"],
-            answer=results_dict["answer"],
-            task=results_dict["task"],
-            info=results_dict["info"],
-            completion=[],
-            state=[],
-            reward=[],
-            metrics={},
-        )
-        rollouts = await self.run_rollouts(
-            prompts=results.prompt,
-            answers=results.answer,
-            tasks=results.task,
-            infos=results.info,
+        rollout_results = await self.run_rollouts(
+            requests=inputs,
             client=client,
             model=model,
             sampling_args=gen_sampling_args,
             max_concurrent=max_concurrent,
             **kwargs,
         )
-        results.completion = [rollout[0] for rollout in rollouts]
-        results.state = [rollout[1] for rollout in rollouts]
+
+        scores_data = {}
         if score_rollouts:
             rollout_scores = await self.rubric.score_rollouts(
-                prompts=results.prompt,
-                completions=results.completion,
-                answers=results.answer,
-                states=results.state,
-                tasks=results.task,
-                infos=results.info,
+                requests=inputs,
+                results=rollout_results,
                 apply_weights=True,
             )
-            results.reward = rollout_scores.reward
-            results.metrics = rollout_scores.metrics
-        return results
+            scores_data = {
+                "reward": rollout_scores.reward,
+                "metrics": rollout_scores.metrics,
+            }
+        return GenerateOutputs(
+            prompt=[r.prompt for r in inputs],
+            answer=[r.answer for r in inputs],
+            task=[r.task for r in inputs],
+            info=[r.info for r in inputs],
+            completion=[r.completion for r in rollout_results],
+            state=[r.state for r in rollout_results],
+            **scores_data,
+        )
 
     def generate(
         self,
-        inputs: GenerateInputs | Dataset,
+        inputs: list[RolloutRequest] | Dataset,
         client: AsyncOpenAI | OpenAI,
         model: str | None = None,
         sampling_args: SamplingArgs | None = None,

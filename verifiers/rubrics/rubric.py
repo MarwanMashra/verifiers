@@ -4,12 +4,11 @@ import logging
 
 from verifiers.parsers.parser import Parser
 from verifiers.types import (
-    Info,
-    Messages,
     RewardFunc,
+    RolloutRequest,
+    RolloutResult,
     RolloutScore,
     RolloutScores,
-    State,
 )
 
 
@@ -65,12 +64,8 @@ class Rubric:
         self,
         func: RewardFunc,
         parser: Parser,
-        prompt: Messages,
-        completion: Messages,
-        answer: str,
-        state: State,
-        task: str = "default",
-        info: Info | None = None,
+        rollout_request: RolloutRequest,
+        rollout_result: RolloutResult,
         **kwargs,
     ) -> float:
         """
@@ -82,20 +77,15 @@ class Rubric:
             ...
         ``
         """
-        info = info or {}
         sig = inspect.signature(func)
 
-        common = dict(
-            parser=parser,
-            prompt=prompt,
-            completion=completion,
-            answer=answer,
-            state=state,
-            task=task,
-            info=info,
-        )
+        merged = {
+            "parser": parser,
+            **rollout_request.model_dump(),
+            **rollout_result.model_dump(),
+            **kwargs,
+        }
         ans = 0.0
-        merged = {**common, **kwargs}
         if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
             try:
                 ans = func(**merged)
@@ -113,12 +103,8 @@ class Rubric:
 
     async def score_rollout(
         self,
-        prompt: Messages,
-        completion: Messages,
-        answer: str,
-        state: State,
-        task: str = "default",
-        info: Info | None = None,
+        request: RolloutRequest,
+        result: RolloutResult,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -129,12 +115,8 @@ class Rubric:
                 self.call_reward_func(
                     func=func,
                     parser=self.parser,
-                    prompt=prompt,
-                    completion=completion,
-                    answer=answer,
-                    state=state,
-                    task=task,
-                    info=info,
+                    rollout_request=request,
+                    rollout_result=result,
                     **kwargs,
                 )
                 for func in self.get_reward_funcs()
@@ -146,12 +128,8 @@ class Rubric:
                 score = await self.call_reward_func(
                     func=func,
                     parser=self.parser,
-                    prompt=prompt,
-                    completion=completion,
-                    answer=answer,
-                    state=state,
-                    task=task,
-                    info=info,
+                    rollout_request=request,
+                    rollout_result=result,
                     **kwargs,
                 )
                 reward_scores.append(score)
@@ -171,12 +149,8 @@ class Rubric:
 
     async def score_rollouts(
         self,
-        prompts: list[Messages],
-        completions: list[Messages],
-        answers: list[str],
-        states: list[State],
-        tasks: list[str],
-        infos: list[Info],
+        requests: list[RolloutRequest],
+        results: list[RolloutResult],
         **kwargs,
     ) -> RolloutScores:
         """
@@ -193,13 +167,13 @@ class Rubric:
         from tqdm.asyncio import tqdm_asyncio
 
         rollout_tasks = [
-            self.score_rollout(*pcasti, **kwargs)
-            for pcasti in zip(prompts, completions, answers, states, tasks, infos)
+            self.score_rollout(request, result, **kwargs)
+            for request, result in zip(requests, results)
         ]
         rewards = await tqdm_asyncio.gather(
             *rollout_tasks,
-            total=len(prompts),
-            desc=f"Evaluating {len(prompts)} rollouts",
+            total=len(requests),
+            desc=f"Evaluating {len(requests)} rollouts",
         )
 
         if not rewards:

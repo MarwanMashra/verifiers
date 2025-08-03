@@ -1,15 +1,10 @@
 from datasets import concatenate_datasets
 from openai import AsyncOpenAI
 
-from verifiers import (
-    ChatMessage,
-    Info,
-    SamplingArgs,
-    State,
-)
+from verifiers import SamplingArgs
 from verifiers.envs.environment import Environment
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import RolloutScore
+from verifiers.types import RolloutRequest, RolloutResult, RolloutScore
 
 
 class EnvGroupRubric(Rubric):
@@ -37,12 +32,8 @@ class EnvGroupRubric(Rubric):
 
     async def score_rollout(
         self,
-        prompt: str | list[ChatMessage],
-        completion: str | list[ChatMessage],
-        answer: str = "",
-        state: State | None = None,
-        task: str = "default",
-        info: dict | None = None,
+        request: RolloutRequest,
+        result: RolloutResult,
         **kwargs,
     ) -> RolloutScore:
         """
@@ -51,23 +42,18 @@ class EnvGroupRubric(Rubric):
         Returns a RolloutScore with all reward function names, using 0.0 for functions
         not applicable to this sample's environment.
         """
-        state = state or {}
-        info = info or {}
-
         # Initialize metrics with all reward names set to 0.0
         metrics = {name: 0.0 for name in self.all_reward_names}
         reward = 0.0
 
         # Get the appropriate environment
-        env = self.env_map.get(task)
+        env = self.env_map.get(request.task)
         if env is None:
-            self.logger.warning(f"No environment found for task '{task}'")
+            self.logger.warning(f"No environment found for task '{request.task}'")
             return RolloutScore(reward=reward, metrics=metrics)
 
         # Score with the environment's rubric
-        env_results = await env.rubric.score_rollout(
-            prompt, completion, answer, state, task, info, **kwargs
-        )
+        env_results = await env.rubric.score_rollout(request, result, **kwargs)
 
         # Update metrics with individual metric scores from the environment
         for reward_name, score in env_results.metrics.items():
@@ -150,13 +136,10 @@ class EnvGroup(Environment):
         self,
         client: AsyncOpenAI,
         model: str,
-        prompt: str | list[ChatMessage],
-        answer: str = "",
-        task: str = "default",
-        info: Info | None = None,
+        request: RolloutRequest,
         sampling_args: SamplingArgs | None = None,
         **kwargs,
-    ) -> tuple[str | list[ChatMessage], State]:
+    ) -> RolloutResult:
         """
         Route rollout to the appropriate sub-environment based on task.
 
@@ -165,16 +148,13 @@ class EnvGroup(Environment):
         2. info['task']
         3. First environment name (default)
         """
-        info = info or {}
         sampling_args = sampling_args or {}
 
         # Route to appropriate environment
-        env = self.env_map[task]
+        env = self.env_map[request.task]
 
         # Pass through all arguments
-        return await env.rollout(
-            client, model, prompt, answer, task, info, sampling_args, **kwargs
-        )
+        return await env.rollout(client, model, request, sampling_args, **kwargs)
 
     def get_env_for_task(self, task: str) -> Environment:
         """Get the environment instance for a given task name."""

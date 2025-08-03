@@ -1,5 +1,10 @@
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Info, Messages, RewardFunc, RolloutScores, State
+from verifiers.types import (
+    RewardFunc,
+    RolloutRequest,
+    RolloutResult,
+    RolloutScores,
+)
 
 
 class RubricGroup(Rubric):
@@ -40,12 +45,8 @@ class RubricGroup(Rubric):
 
     async def score_rollouts(
         self,
-        prompts: list[Messages],
-        completions: list[Messages],
-        answers: list[str],
-        states: list[State],
-        tasks: list[str],
-        infos: list[Info],
+        requests: list[RolloutRequest],
+        results: list[RolloutResult],
         **kwargs,
     ) -> RolloutScores:
         """
@@ -58,9 +59,7 @@ class RubricGroup(Rubric):
             metrics={},
         )
         for rubric in self.rubrics:
-            rubric_scores = await rubric.score_rollouts(
-                prompts, completions, answers, states, tasks, infos, **kwargs
-            )
+            rubric_scores = await rubric.score_rollouts(requests, results, **kwargs)
             for key, value in rubric_scores.metrics.items():
                 if key in all_scores.metrics:
                     # element-wise sum

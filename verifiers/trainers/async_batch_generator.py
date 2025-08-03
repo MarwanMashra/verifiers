@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from verifiers import GenerateOutputs
+from verifiers.envs.environment import Environment
 from verifiers.types import ProcessedOutputs
 
 
@@ -51,8 +52,8 @@ class AsyncBatchGenerator:
 
     def __init__(
         self,
-        env,
-        client_config,
+        env: Environment,
+        client_config: dict[str, Any],
         model_name: str,
         sampling_args: dict[str, Any],
         num_batches_ahead: int = 1,
@@ -318,13 +319,12 @@ class AsyncBatchGenerator:
         assert inputs is not None, "No dataset found"
 
         # Run generation on eval dataset
-        results = await self.env.a_generate(
+        return await self.env.a_generate(
             inputs,
             client=self.client,
             model=self.model_name,
             sampling_args=self.sampling_args,
         )
-        return results
 
     def evaluate(self, num_samples: int = -1) -> GenerateOutputs:
         """
